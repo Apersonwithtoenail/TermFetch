@@ -1,23 +1,34 @@
 #!/usr/bin/env python3
-"""termfetch — fast, pretty system info for Linux. No dependencies."""
+"""termfetch — fast, pretty system info for Linux."""
 
-import os
-import re
-import sys
-import json
-import shutil
-import platform
-import subprocess
+import os, re, sys, json, platform, subprocess
 
-VERSION = "0.1.0"
+VERSION = "0.5.0"
+ESC = "\033["
+RESET = "\033[0m"
 
-COLORS = {
-    "accent": "\033[38;5;208m",   # amber, matches PaperRuner
-    "reset":  "\033[0m",
-}
+def fg(n): return f"{ESC}38;5;{n}m"
+def rgb(r, g, b): return f"{ESC}38;2;{r};{g};{b}m"
 
-LOGOS = {
-    "kali": r"""
+GRAD = [
+    (255, 176,  58), (255, 108, 158), (167, 108, 255),
+    ( 82, 196, 255), (108, 255, 176), (255, 176,  58),
+]
+
+def grad_color(t):
+    t = t % 1.0
+    n = len(GRAD) - 1
+    seg = t * n; i = int(seg); f = seg - i
+    a, b = GRAD[i], GRAD[i + 1]
+    return (int(a[0]+(b[0]-a[0])*f),
+            int(a[1]+(b[1]-a[1])*f),
+            int(a[2]+(b[2]-a[2])*f))
+
+SPARK = "▁▂▃▄▅▆▇█"
+PARTIALS = "▏▎▍▌▋▊▉"
+AMBER = 208
+
+LOGOS = {"kali": r"""
       ,;:ccc,.
     .';;;:::;,,.x,
  ..'''.            0Xxoc:,.
@@ -27,293 +38,231 @@ LOGOS = {
                 ;Wd
                  ;XO,
                    ,d0Odlc;,..
-                       ..',;:cdOOd::,.
+                       ..,;:cdOOd::,.
                                 .:d;.':;.
                                    'd,  .'
                                      ;l   ..
                                       .o
-""",
-}
+"""}
 
-
-# ---------- low-level helpers ----------
-
-def read_file(path, default=""):
+def read_file(p, d=""):
     try:
-        with open(path) as f:
-            return f.read().strip()
-    except Exception:
-        return default
+        with open(p) as f: return f.read().strip()
+    except Exception: return d
 
-
-def run(cmd, timeout=0.6):
+def run(cmd, t=0.6):
     try:
-        return subprocess.check_output(
-            cmd,
-            stderr=subprocess.DEVNULL,
-            timeout=timeout,
-        ).decode(errors="replace").strip()
-    except Exception:
-        return ""
-
-
-def bar(pct, width=10):
-    filled = max(0, min(width, int(round(pct * width))))
-    return "▓" * filled + "░" * (width - filled)
-
-
-# ---------- collectors ----------
+        return subprocess.check_output(cmd, stderr=subprocess.DEVNULL,
+                                       timeout=t).decode(errors="replace").strip()
+    except Exception: return ""
 
 def distro():
-    data = {}
+    d = {}
     for line in read_file("/etc/os-release").splitlines():
         if "=" in line:
             k, v = line.split("=", 1)
-            data[k] = v.strip().strip('"')
-    name = data.get("NAME", "Linux")
-    ver = data.get("VERSION_ID") or data.get("VERSION", "")
-    return f"{name} {ver}".strip()
+            d[k] = v.strip().strip('"')
+    return f"{d.get('NAME','Linux')} {d.get('VERSION_ID') or d.get('VERSION','')}".strip()
 
-
-def uptime():
-    try:
-        secs = float(read_file("/proc/uptime").split()[0])
-    except Exception:
-        return "unknown"
-    d = int(secs // 86400)
-    h = int((secs % 86400) // 3600)
-    m = int((secs % 3600) // 60)
+def uptime_str():
+    try: s = float(read_file("/proc/uptime").split()[0])
+    except: s = 0.0
+    dd = int(s//86400); h = int((s%86400)//3600)
+    m = int((s%3600)//60); sec = int(s%60)
     parts = []
-    if d:
-        parts.append(f"{d}d")
-    if h:
-        parts.append(f"{h}h")
-    parts.append(f"{m}m")
+    if dd: parts.append(f"{dd}d")
+    if h: parts.append(f"{h}h")
+    if m: parts.append(f"{m}m")
+    parts.append(f"{sec}s")
     return " ".join(parts)
 
-
 def shell():
-    sh = os.environ.get("SHELL", "")
-    name = os.path.basename(sh) or "sh"
-    ver = ""
+    name = os.path.basename(os.environ.get("SHELL", "")) or "sh"
     if "zsh" in name:
-        ver = os.environ.get("ZSH_VERSION", "")
-    elif "bash" in name:
-        ver = os.environ.get("BASH_VERSION", "").split(".")[0]
-    return f"{name} {ver}".strip()
-
+        return f"zsh {os.environ.get('ZSH_VERSION','')}".strip()
+    if "bash" in name:
+        return f"bash {os.environ.get('BASH_VERSION','').split('.')[0]}".strip()
+    return name
 
 def wm():
     sess = os.environ.get("XDG_SESSION_TYPE", "").lower()
-    de = (os.environ.get("XDG_CURRENT_DESKTOP")
-          or os.environ.get("DESKTOP_SESSION", ""))
-    if de and sess:
-        return f"{de} ({sess})"
-    if de:
-        return de
-    return "unknown"
+    de = os.environ.get("XDG_CURRENT_DESKTOP") or os.environ.get("DESKTOP_SESSION", "")
+    return f"{de} ({sess})" if de and sess else (de or "?")
 
-
-def cpu():
+def cpu_model():
     info = read_file("/proc/cpuinfo")
-    model = ""
-    count = 0
+    model = ""; count = 0
     for line in info.splitlines():
-        if line.startswith("processor"):
-            count += 1
+        if line.startswith("processor"): count += 1
         elif line.startswith("model name") and not model:
             model = line.split(":", 1)[1].strip()
     count = count or os.cpu_count() or 1
     model = re.sub(r"\s+CPU\s+", " ", model)
     model = re.sub(r"\s+", " ", model).strip()
-    return f"{model} ({count}c)" if model else f"{count}-core CPU"
+    return f"{model} ({count}c)" if model else f"{count}c"
 
-
-def ram():
+def ram_stats():
     info = read_file("/proc/meminfo")
-    total = avail = 0
+    t = a = 0
     for line in info.splitlines():
-        if line.startswith("MemTotal:"):
-            total = int(line.split()[1])
-        elif line.startswith("MemAvailable:"):
-            avail = int(line.split()[1])
-    if not total:
-        return "unknown"
-    used = total - avail
-    pct = used / total
-    return f"{used/1024/1024:.1f} / {total/1024/1024:.1f} GB  {bar(pct)}"
+        if line.startswith("MemTotal:"): t = int(line.split()[1])
+        elif line.startswith("MemAvailable:"): a = int(line.split()[1])
+    used = t - a if t else 0
+    return used, t, (used/t if t else 0)
 
-
-def disk(path="/"):
+def disk_stats(p="/"):
     try:
-        st = os.statvfs(path)
-        total = st.f_blocks * st.f_frsize
-        free = st.f_bavail * st.f_frsize
-        used = total - free
-        pct = used / total if total else 0
-        return f"/  {used/1024**3:.0f} / {total/1024**3:.0f} GB  {bar(pct)}"
-    except Exception:
-        return "unknown"
+        st = os.statvfs(p)
+        t = st.f_blocks * st.f_frsize
+        f = st.f_bavail * st.f_frsize
+        u = t - f
+        return u, t, (u/t if t else 0)
+    except: return 0, 0, 0
 
+def load_avg():
+    try: return read_file("/proc/loadavg").split()[:3]
+    except: return ["0","0","0"]
+
+def proc_count():
+    try: return len([p for p in os.listdir("/proc") if p.isdigit()])
+    except: return 0
+
+def net_bytes():
+    rx = tx = 0
+    try:
+        for line in read_file("/proc/net/dev").splitlines()[2:]:
+            if ":" not in line: continue
+            iface, data = line.split(":", 1)
+            if iface.strip() == "lo": continue
+            p = data.split()
+            rx += int(p[0]); tx += int(p[8])
+    except: pass
+    return rx, tx
 
 def gpu():
-    out = run(["lspci"], timeout=0.8)
-    for line in out.splitlines():
+    for line in run(["lspci"], t=0.8).splitlines():
         if "VGA" in line or "3D controller" in line:
             return line.split(": ", 1)[-1]
     return ""
 
+def bar(pct, w=12):
+    pct = max(0.0, min(1.0, pct))
+    e = int(pct * w * 8)
+    full = e // 8; part = e % 8
+    filled = "█" * full
+    if part and full < w:
+        filled += PARTIALS[part - 1]; full += 1
+    empty = w - full
+    c = fg(120) if pct < 0.5 else (fg(214) if pct < 0.75 else fg(202))
+    return f"{c}{filled}{fg(238)}{'░'*empty}{RESET}"
 
-def resolution():
-    if not shutil.which("xrandr"):
-        return ""
-    out = run(["xrandr"], timeout=0.5)
-    for line in out.splitlines():
-        m = re.search(r"(\d+)x(\d+)\+.*\*", line)
-        if m:
-            return f"{m.group(1)}x{m.group(2)}"
-    return ""
+def gradient_logo(logo_lines, phase=0.0):
+    out = []
+    for i, line in enumerate(logo_lines):
+        t0 = (i / max(1, len(logo_lines)) + phase) % 1.0
+        colored = []
+        for j, ch in enumerate(line):
+            if ch == " ":
+                colored.append(ch); continue
+            t = t0 + (j / max(1, len(line))) * 0.4
+            r, g, b = grad_color(t)
+            colored.append(f"{rgb(r,g,b)}{ch}")
+        colored.append(RESET)
+        out.append("".join(colored))
+    return out
 
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+def vlen(s): return len(ANSI_RE.sub("", s))
 
-def detect_logo():
-    data = read_file("/etc/os-release").lower()
-    if "kali" in data:
-        return "kali"
-    return "kali"
+def kv(k, v): return f"{fg(AMBER)}{k:<8}{RESET}{v}"
 
-
-# ---------- rendering ----------
-
-def kv(opts, key, value):
-    a = opts["accent"]
-    r = opts["reset"]
-    return f"{a}{key:<8}{r}{value}"
-
-
-def info_lines(opts):
-    a = opts["accent"]
-    r = opts["reset"]
+def render_static():
+    used, total, rpct = ram_stats()
+    dused, dtotal, dpct = disk_stats()
     user = os.environ.get("USER", "user")
     host = platform.node() or "host"
-    sep = "─" * 30
-    out = [
-        f"{a}{user}@{host}{r}",
-        sep,
-        kv(opts, "OS", distro()),
-        kv(opts, "Kernel", platform.release()),
-        kv(opts, "Uptime", uptime()),
-        kv(opts, "Shell", shell()),
-        kv(opts, "WM", wm()),
-        kv(opts, "CPU", cpu()),
-        kv(opts, "RAM", ram()),
-        kv(opts, "Disk", disk()),
+    info = [
+        f"{fg(AMBER)}{user}@{host}{RESET}",
+        "─" * 44,
+        kv("OS",     distro()),
+        kv("Kernel", platform.release()),
+        kv("Uptime", uptime_str()),
+        kv("Load",   "  ".join(load_avg())),
+        kv("Shell",  shell()),
+        kv("WM",     wm()),
+        kv("CPU",    cpu_model()),
+        kv("RAM",    f"{used/1024/1024:.1f} / {total/1024/1024:.1f} GB  {bar(rpct, 12)}"),
+        kv("Disk",   f"/  {dused/1024**3:.0f} / {dtotal/1024**3:.0f} GB  {bar(dpct, 12)}"),
+        kv("Procs",  str(proc_count())),
     ]
     g = gpu()
     if g:
-        out.append(kv(opts, "GPU", g))
-    d = resolution()
-    if d:
-        out.append(kv(opts, "Display", d))
-    return out
-
-
-def render(logo_lines, info_lines_, opts):
-    a = opts["accent"]
-    r = opts["reset"]
-    max_logo = max((len(l) for l in logo_lines), default=0)
-    n = max(len(logo_lines), len(info_lines_))
+        info.append(kv("GPU", g[:60]))
+    logo_lines = LOGOS["kali"].strip("\n").splitlines()
+    colored = gradient_logo(logo_lines, 0.0)
+    max_w = max(vlen(l) for l in colored)
+    n = max(len(colored), len(info))
     out = []
     for i in range(n):
-        left = logo_lines[i] if i < len(logo_lines) else ""
-        right = info_lines_[i] if i < len(info_lines_) else ""
-        pad = " " * (max_logo - len(left) + 4)
-        out.append(f"{a}{left}{r}{pad}{right}")
+        left  = colored[i] if i < len(colored) else ""
+        right = info[i]    if i < len(info)    else ""
+        pad = " " * (max_w - vlen(left) + 4)
+        out.append(f"{left}{pad}{right}")
     return "\n".join(out)
 
+def as_json():
+    used, rtotal, _ = ram_stats()
+    dused, dtotal, _ = disk_stats()
+    rx, tx = net_bytes()
+    return json.dumps({
+        "user": os.environ.get("USER"), "host": platform.node(),
+        "os": distro(), "kernel": platform.release(),
+        "uptime": uptime_str(), "shell": shell(), "wm": wm(),
+        "cpu": cpu_model(),
+        "ram_used_mb": round(used/1024), "ram_total_mb": round(rtotal/1024),
+        "disk_used_gb": round(dused/1024**3, 1),
+        "disk_total_gb": round(dtotal/1024**3, 1),
+        "gpu": gpu(), "net_rx_bytes": rx, "net_tx_bytes": tx,
+        "procs": proc_count(),
+    }, indent=2)
 
-# ---------- CLI ----------
-
-HELP = """\
-termfetch — fast, pretty system info
+HELP = """termfetch — system info
 
 Usage: termfetch [OPTIONS]
+  -n, --no-color   disable colors
+      --json       print JSON
+  -V, --version    show version
+  -h, --help       show help
 
-Options:
-  -n, --no-color     disable colors
-  -c, --color        force colors
-  -l, --logo NAME    pick a logo (default: auto)
-      --json         print as JSON
-  -V, --version      show version
-  -h, --help         show this help
+Live updates:
+  watch -n 1 -t termfetch
+  Ctrl+C to quit
 """
 
-
 def parse_args(argv):
-    opts = {
-        "color": sys.stdout.isatty(),
-        "logo": None,
-        "json": False,
-    }
+    opts = {"color": sys.stdout.isatty(), "json": False}
     i = 0
     while i < len(argv):
         a = argv[i]
-        if a in ("--no-color", "-n"):
-            opts["color"] = False
-        elif a in ("--color", "-c"):
-            opts["color"] = True
-        elif a == "--json":
-            opts["json"] = True
-        elif a in ("--logo", "-l") and i + 1 < len(argv):
-            i += 1
-            opts["logo"] = argv[i]
-        elif a in ("--version", "-V"):
-            print(f"termfetch {VERSION}")
-            sys.exit(0)
-        elif a in ("--help", "-h"):
-            print(HELP)
-            sys.exit(0)
+        if   a in ("--no-color","-n"): opts["color"] = False
+        elif a == "--json":            opts["json"] = True
+        elif a in ("--version","-V"):
+            print(f"termfetch {VERSION}"); sys.exit(0)
+        elif a in ("--help","-h"):
+            print(HELP); sys.exit(0)
         i += 1
     return opts
 
-
-def as_json():
-    return json.dumps({
-        "user": os.environ.get("USER"),
-        "host": platform.node(),
-        "os": distro(),
-        "kernel": platform.release(),
-        "uptime": uptime(),
-        "shell": shell(),
-        "wm": wm(),
-        "cpu": cpu(),
-        "ram": ram(),
-        "disk": disk(),
-        "gpu": gpu(),
-        "display": resolution(),
-    }, indent=2)
-
-
 def main(argv):
     opts = parse_args(argv)
-
     if opts["json"]:
-        print(as_json())
-        return 0
-
+        print(as_json()); return 0
     if not opts["color"]:
-        opts["accent"] = ""
-        opts["reset"] = ""
-    else:
-        opts["accent"] = COLORS["accent"]
-        opts["reset"] = COLORS["reset"]
-
-    key = opts["logo"] or detect_logo()
-    logo = LOGOS.get(key, LOGOS["kali"])
-    logo_lines = logo.strip("\n").splitlines()
-    info = [""] + info_lines(opts)
-    print(render(logo_lines, info, opts))
+        g = globals()
+        g["fg"] = lambda n: ""
+        g["rgb"] = lambda r, gg, b: ""
+    print(render_static())
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
