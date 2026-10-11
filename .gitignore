@@ -5,3 +5,8 @@ __pycache__/
 .idea/
 *.swp
 .DS_Store
+termfetch.py.*
+termfetch.py.old*
+termfetch.py.mess*
+termfetch.py.static_ver
+termfetch.py.with_live
