@@ -22,11 +22,60 @@ GRAD = [
     ( 82, 196, 255), (108, 255, 176), (255, 176,  58),
 ]
 
-def grad_color(t):
+# Themes: list of RGB stops. More stops = smoother gradient.
+THEMES = [
+    # 0 — default amber→pink→violet→cyan→mint
+    GRAD,
+
+    # 1 — solid amber
+    [(255,176,58),(255,176,58)],
+
+    # 2 — cyan → mint
+    [(82,196,255),(108,255,176),(82,196,255)],
+
+    # 3 — magenta → violet
+    [(255,108,158),(167,108,255),(255,108,158)],
+
+    # 4 — fire (red → orange → yellow)
+    [(220,40,40),(255,120,40),(255,210,60),(255,120,40),(220,40,40)],
+
+    # 5 — ocean (deep blue → cyan → white)
+    [(30,60,180),(60,140,240),(120,220,255),(230,250,255),(120,220,255),(60,140,240),(30,60,180)],
+
+    # 6 — forest (dark green → lime → yellow-green)
+    [(20,80,40),(60,180,90),(140,230,120),(60,180,90),(20,80,40)],
+
+    # 7 — synthwave (hot pink → purple → cyan)
+    [(255,60,180),(180,60,255),(60,180,255),(180,60,255),(255,60,180)],
+
+    # 8 — lava lamp (red → orange → magenta → purple)
+    [(200,30,30),(255,90,40),(255,40,140),(180,40,220),(255,40,140),(255,90,40),(200,30,30)],
+
+    # 9 — matrix (dark green → bright green → white)
+    [(20,80,20),(40,200,60),(180,255,180),(40,200,60),(20,80,20)],
+
+    # 10 — rainbow (full spectrum)
+    [(255,0,0),(255,128,0),(255,255,0),(0,255,0),(0,255,255),(0,128,255),(128,0,255),(255,0,128),(255,0,0)],
+
+    # 11 — ice (white → pale blue → deep blue)
+    [(240,250,255),(160,200,255),(80,140,240),(160,200,255),(240,250,255)],
+]
+
+THEME_NAMES = [
+    "gradient", "amber", "cyan", "magenta",
+    "fire", "ocean", "forest", "synthwave",
+    "lava", "matrix", "rainbow", "ice",
+]
+
+def active_gradient(theme_idx):
+    return THEMES[theme_idx % len(THEMES)]
+
+def grad_color(t, theme=0):
+    pal = active_gradient(theme)
     t = t % 1.0
-    n = len(GRAD) - 1
+    n = len(pal) - 1
     seg = t * n; i = int(seg); f = seg - i
-    a, b = GRAD[i], GRAD[i + 1]
+    a, b = pal[i], pal[i + 1]
     return (int(a[0]+(b[0]-a[0])*f),
             int(a[1]+(b[1]-a[1])*f),
             int(a[2]+(b[2]-a[2])*f))
@@ -184,7 +233,7 @@ def bar(pct, w=10):
     c = fg(120) if pct < 0.5 else (fg(214) if pct < 0.75 else fg(202))
     return f"{c}{filled}{fg(238)}{'░'*empty}{RESET}"
 
-def gradient_logo(logo_lines, phase):
+def gradient_logo(logo_lines, phase, theme=0):
     out = []
     for i, line in enumerate(logo_lines):
         t0 = (i / max(1, len(logo_lines)) + phase) % 1.0
@@ -193,7 +242,7 @@ def gradient_logo(logo_lines, phase):
             if ch == " ":
                 colored.append(ch); continue
             t = t0 + (j / max(1, len(line))) * 0.4
-            r, g, b = grad_color(t)
+            r, g, b = grad_color(t, theme)
             colored.append(f"{rgb(r,g,b)}{ch}")
         colored.append(RESET)
         out.append("".join(colored))
@@ -243,22 +292,32 @@ def cava_thread(proc, q, stop):
             except: pass
     except: pass
 
-def render_cava(vals, height, phase):
+def render_cava(vals, height, phase, theme=0):
+    """2D gradient: horizontal across bars, vertical up each bar."""
     if not vals or height < 2:
         return ["" for _ in range(height)]
     n = len(vals)
+    pal = active_gradient(theme)
     grid = [[" "] * (n * 2) for _ in range(height)]
     for b, v in enumerate(vals):
         e = int((v / 100.0) * (height * 8))
         full = e // 8; rem = e % 8
+        base_hue = (b / max(1, n) + phase * 0.3) % 1.0
         for r in range(height):
             fb = height - 1 - r
             if fb < full: ch = "█"
             elif fb == full and rem: ch = PARTIALS[rem - 1]
             else: continue
-            hue = (b/max(1,n) + phase*0.3) % 1.0
-            t = int(hue * len(GRAD)) % len(GRAD)
-            r0, g0, b0 = GRAD[t]
+            # vertical offset: 0 at bottom → 1 at top of terminal
+            row_ratio = (height - 1 - fb) / max(1, height - 1)
+            hue = (base_hue + row_ratio * 0.55) % 1.0
+            # smooth interpolation through palette
+            seg = hue * (len(pal) - 1)
+            i = int(seg); f = seg - i
+            a = pal[i]; bb = pal[i + 1]
+            r0 = int(a[0] + (bb[0] - a[0]) * f)
+            g0 = int(a[1] + (bb[1] - a[1]) * f)
+            b0 = int(a[2] + (bb[2] - a[2]) * f)
             col = rgb(r0, g0, b0)
             grid[r][b*2] = f"{col}{ch}{RESET}"
             grid[r][b*2+1] = f"{col}{ch}{RESET}"
@@ -267,7 +326,7 @@ def render_cava(vals, height, phase):
 # ---------- info ----------
 def kv(k, v): return f"{fg(208)}{k:<8}{RESET}{v}"
 
-def build_info(s):
+def build_info(s, show_spark=True, theme=0):
     user = os.environ.get("USER", "user")
     host = platform.node() or "host"
     spin = SPINNER[s["frame"] % len(SPINNER)]
@@ -280,7 +339,7 @@ def build_info(s):
         kv("Load",   "  ".join(s["load"])),
         kv("Shell",  s["shell"]),
         kv("WM",     s["wm"]),
-        kv("CPU",    f"{s['cpu']:5.1f}%  {bar(s['cpu']/100, 10)} {sparkline(s['cpu_history'], 10)}"),
+        kv("CPU",    f"{s['cpu']:5.1f}%  {bar(s['cpu']/100, 10)}" + (f" {sparkline(s['cpu_history'], 10)}" if show_spark else "")),
         kv("RAM",    f"{s['ram_used']/1024/1024:>4.1f}/{s['ram_total']/1024/1024:.1f}G {bar(s['ram_pct'], 10)}"),
         kv("Disk",   f"{s['disk_used']/1024**3:>3.0f}/{s['disk_total']/1024**3:.0f}G   {bar(s['disk_pct'], 10)}"),
         kv("Net",    f"▼{s['rx_rate']}  ▲{s['tx_rate']}"),
@@ -289,7 +348,15 @@ def build_info(s):
     if s.get("gpu"):
         lines.append(kv("GPU", s["gpu"][:44]))
     lines.append("")
-    lines.append(f"{fg(208)}q{RESET} quit   {fg(208)}space{RESET} pause")
+    tname = THEME_NAMES[theme % len(THEME_NAMES)]
+    lines.append(
+        f"{fg(208)}q{RESET} quit   "
+        f"{fg(208)}spc{RESET} pause   "
+        f"{fg(208)}l{RESET} logo   "
+        f"{fg(208)}c{RESET} cava   "
+        f"{fg(208)}s{RESET} spark   "
+        f"{fg(208)}t{RESET} theme: {fg(214)}{tname}{RESET}"
+    )
     return lines
 
 # ---------- live ----------
@@ -298,6 +365,10 @@ def run_live():
     old_t = termios.tcgetattr(fd)
 
     paused = False
+    show_logo = True
+    show_cava = True
+    show_spark = True
+    theme = 0          # 0=gradient 1=amber 2=cyan 3=magenta
     frame = 0
     prev_cpu = None
     prev_net = None
@@ -349,6 +420,14 @@ def run_live():
                     break
                 if ch == b" ":
                     paused = not paused
+                if ch in (b"l", b"L"):
+                    show_logo = not show_logo
+                if ch in (b"c", b"C"):
+                    show_cava = not show_cava
+                if ch in (b"s", b"S"):
+                    show_spark = not show_spark
+                if ch in (b"t", b"T"):
+                    theme = (theme + 1) % len(THEMES)
 
             if not paused:
                 frame += 1
@@ -393,8 +472,8 @@ def run_live():
             except queue.Empty: pass
 
             logo_lines = LOGOS["kali"].strip("\n").splitlines()
-            colored = gradient_logo(logo_lines, phase=(frame * 0.02) % 1.0)
-            info = build_info(stats)
+            colored = gradient_logo(logo_lines, phase=(frame * 0.02) % 1.0, theme=theme) if show_logo else [""] * 15
+            info = build_info(stats, show_spark, theme)
 
             cols, rows = shutil.get_terminal_size((120, 30))
             max_lw = max(vlen(l) for l in colored)
@@ -404,7 +483,7 @@ def run_live():
             cava_lines = ["" for _ in range(total_h)]
             room = cols - max_lw - info_w - 8
 
-            if room >= 4:
+            if show_cava and room >= 4:
                 max_bars = room // 2
                 if not cava_bars:
                     cava_bars = [0] * max_bars
@@ -415,7 +494,7 @@ def run_live():
                     else:
                         cava_bars = cava_bars[:max_bars]
                 cava_lines = render_cava(cava_bars, total_h,
-                                         phase=frame * 0.02)
+                                         phase=frame * 0.02, theme=theme)
 
             n = max(len(colored), len(info))
             lines = []
