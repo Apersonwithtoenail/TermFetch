@@ -7,6 +7,8 @@ import threading, subprocess, termios, atexit
 VERSION = "0.5.0"
 ESC = "\033["
 RESET = "\033[0m"
+ACCENT = "\033[38;5;208m"
+ACCENT_PHASE = 0.0
 HIDE_CURSOR = ESC + "?25l"
 SHOW_CURSOR = ESC + "?25h"
 
@@ -255,7 +257,7 @@ def start_cava(bars=64):
     if not shutil.which("cava"): return None
     with open(CAVA_CONF, "w") as f:
         f.write(f"""[general]
-framerate = 60
+framerate = 30
 bars = {bars}
 
 [input]
@@ -324,14 +326,70 @@ def render_cava(vals, height, phase, theme=0):
     return ["".join(row) for row in grid]
 
 # ---------- info ----------
-def kv(k, v): return f"{fg(208)}{k:<8}{RESET}{v}"
+def kv(k, v): return f"{ACCENT}{k:<8}{RESET}{v}"
 
-def build_info(s, show_spark=True, theme=0):
+def build_info_boxed(s, show_spark=True, theme=0):
+    user = os.environ.get("USER", "user")
+    host = platform.node() or "host"
+    spin = SPINNER[s["frame"] % len(SPINNER)]
+    ph = (s["frame"] * 0.02) % 1.0
+    c = rgb(*grad_color(ph, theme))
+    def edge(x): return c + x + RESET
+    def make_box(title, rows):
+        # W = widest content + 2 side pads + 2 borders
+        maxw = max(vlen(r) for r in rows) if rows else 20
+        W = maxw + 4
+        # title needs room too
+        need = vlen(title) + 6
+        if need > W: W = need
+        # top: "╭─ " + title + " " + "─"*(W - len(title) - 5) + "╮" = W
+        tpad = W - vlen(title) - 5
+        out = [edge("\u256d\u2500 ") + edge(title) + " " + edge("\u2500" * tpad) + edge("\u256e")]
+        for r in rows:
+            pad = W - 4 - vlen(r)
+            out.append(edge("\u2502") + " " + r + " " * max(0,pad) + " " + edge("\u2502"))
+        out.append(edge("\u2570" + "\u2500" * (W-2) + "\u256f"))
+        return out
+    lines = [f"{ACCENT}{user}@{host}{RESET}  {ACCENT}{spin}{RESET}", ""]
+    sysrows = [
+        kv("OS",     s["distro"]),
+        kv("Kernel", s["kernel"]),
+        kv("Uptime", s["uptime"]),
+        kv("Load",   "  ".join(s["load"])),
+        kv("Shell",  s["shell"]),
+        kv("WM",     s["wm"]),
+    ]
+    lines += make_box("system", sysrows)
+    lines.append("")
+    hwrows = [
+        kv("CPU",   f"{s['cpu']:5.1f}%  " + bar(s["cpu"]/100, 8)),
+        kv("RAM",   f"{s['ram_used']/1024/1024:.1f}/{s['ram_total']/1024/1024:.1f}G " + bar(s["ram_pct"], 6)),
+        kv("Disk",  f"{s['disk_used']/1024**3:.0f}/{s['disk_total']/1024**3:.0f}G " + bar(s["disk_pct"], 6)),
+        kv("Net",   f"\u25bc{s['rx_rate']}  \u25b2{s['tx_rate']}"),
+        kv("Procs", str(s["proc_count"])),
+    ]
+    if s.get("gpu"):
+        hwrows.append(kv("GPU", s["gpu"][:22]))
+    lines += make_box("hardware", hwrows)
+    lines.append("")
+    tname = THEME_NAMES[theme % len(THEME_NAMES)]
+    lines.append(
+        f"{ACCENT}q{RESET} quit   "
+        f"{ACCENT}spc{RESET} pause   "
+        f"{ACCENT}l{RESET} logo   "
+        f"{ACCENT}c{RESET} cava   "
+        f"{ACCENT}s{RESET} spark   "
+        f"{ACCENT}v{RESET} view:{VARIANT_NAMES[VARIANT[0]]}   "
+        f"{ACCENT}t{RESET} theme: {fg(214)}{tname}{RESET}"
+    )
+    return lines
+
+def build_info_classic(s, show_spark=True, theme=0):
     user = os.environ.get("USER", "user")
     host = platform.node() or "host"
     spin = SPINNER[s["frame"] % len(SPINNER)]
     lines = [
-        f"{fg(208)}{user}@{host}{RESET}  {fg(208)}{spin}{RESET}",
+        f"{ACCENT}{user}@{host}{RESET}  {ACCENT}{spin}{RESET}",
         "─" * 44,
         kv("OS",     s["distro"]),
         kv("Kernel", s["kernel"]),
@@ -350,14 +408,86 @@ def build_info(s, show_spark=True, theme=0):
     lines.append("")
     tname = THEME_NAMES[theme % len(THEME_NAMES)]
     lines.append(
-        f"{fg(208)}q{RESET} quit   "
-        f"{fg(208)}spc{RESET} pause   "
-        f"{fg(208)}l{RESET} logo   "
-        f"{fg(208)}c{RESET} cava   "
-        f"{fg(208)}s{RESET} spark   "
-        f"{fg(208)}t{RESET} theme: {fg(214)}{tname}{RESET}"
+        f"{ACCENT}q{RESET} quit   "
+        f"{ACCENT}spc{RESET} pause   "
+        f"{ACCENT}l{RESET} logo   "
+        f"{ACCENT}c{RESET} cava   "
+        f"{ACCENT}s{RESET} spark   "
+        f"{ACCENT}v{RESET} view:{VARIANT_NAMES[VARIANT[0]]}   "
+        f"{ACCENT}t{RESET} theme: {fg(214)}{tname}{RESET}"
     )
     return lines
+
+
+def build_info_fancy(s, show_spark=True, theme=0):
+    user = os.environ.get("USER", "user")
+    host = platform.node() or "host"
+    spin = SPINNER[s["frame"] % len(SPINNER)]
+    ph = (s["frame"] * 0.02) % 1.0
+    c = rgb(*grad_color(ph, theme))
+    def g(x): return c + x + RESET
+    W = 52
+    def wrap(title, rows):
+        # top
+        tpad = W - len(title) - 5
+        out = [g("\u256d\u2500 ") + g(title) + " " + g("\u2500" * max(0,tpad)) + g("\u256e")]
+        for r in rows:
+            gap = W - 4 - vlen(r)
+            out.append(g("\u2502") + " " + r + " " * max(0,gap) + " " + g("\u2502"))
+        out.append(g("\u2570" + "\u2500" * (W-2) + "\u256f"))
+        return out
+    def row(sym, txt):
+        return f"{g(sym)} {txt}"
+    lines = [f"{ACCENT}{user}@{host}{RESET}  {ACCENT}{spin}{RESET}", ""]
+    # PC
+    lines += wrap(f"PC: {host}", [
+        row("\u25cf", cpu_model()[:40]),
+        row("\u25cf", f"RAM {s['ram_used']/1024/1024:.1f} / {s['ram_total']/1024/1024:.1f} GB"),
+        row("\u25cf", f"Disk {s['disk_used']/1024**3:.1f} / {s['disk_total']/1024**3:.1f} GB"),
+    ])
+    lines.append("")
+    # OS
+    lines += wrap(f"OS: {s['distro'][:30]}", [
+        row("\u25b8", f"Linux {s['kernel']}"),
+        row("\u25b8", f"{s['shell']}"),
+        row("\u25b8", f"{s['wm']}"),
+        row("\u25b8", f"Locale {os.environ.get('LANG','?').split('.')[0]}"),
+    ])
+    lines.append("")
+    # LIVE
+    live = [
+        row("\u25b8", f"CPU {s['cpu']:4.1f}%"),
+        row("\u25b8", f"Load {'  '.join(s['load'])}"),
+        row("\u25b8", f"Net \u25bc{s['rx_rate']}  \u25b2{s['tx_rate']}"),
+        row("\u25b8", f"Procs {s['proc_count']}"),
+    ]
+    if s.get("gpu"):
+        live.append(row("\u25b8", f"GPU {s['gpu'][:36]}"))
+    lines += wrap("LIVE", live)
+    lines.append("")
+    # Uptime
+    lines += wrap("Uptime", [row("\u25b8", s['uptime'])])
+    lines.append("")
+    tname = THEME_NAMES[theme % len(THEME_NAMES)]
+    lines.append(
+        f"{ACCENT}q{RESET} quit   "
+        f"{ACCENT}l{RESET} logo   "
+        f"{ACCENT}c{RESET} cava   "
+        f"{ACCENT}s{RESET} spark   "
+        f"{ACCENT}v{RESET} view:{VARIANT_NAMES[VARIANT[0]]}   "
+        f"{ACCENT}t{RESET} theme: {fg(214)}{tname}{RESET}"
+    )
+    return lines
+
+VARIANT = [0]
+VARIANT_NAMES = ["classic", "boxed", "fancy"]
+
+def build_info(s, show_spark=True, theme=0):
+    if VARIANT[0] == 0:
+        return build_info_classic(s, show_spark, theme)
+    if VARIANT[0] == 1:
+        return build_info_boxed(s, show_spark, theme)
+    return build_info_fancy(s, show_spark, theme)
 
 # ---------- live ----------
 def run_live():
@@ -411,6 +541,7 @@ def run_live():
         sys.stdout.write(HIDE_CURSOR)
         sys.stdout.flush()
 
+        last_render = 0.0
         while True:
             r, _, _ = select.select([fd], [], [], 0.05)
             if r:
@@ -426,6 +557,7 @@ def run_live():
                     show_cava = not show_cava
                 if ch in (b"s", b"S"):
                     show_spark = not show_spark
+                if ch in (b"v", b"V"): VARIANT[0] = (VARIANT[0] + 1) % 3
                 if ch in (b"t", b"T"):
                     theme = (theme + 1) % len(THEMES)
 
@@ -464,6 +596,12 @@ def run_live():
                 last_sample = now
 
             if stats is None: continue
+            if now - last_render < 0.12:
+                continue
+            last_render = now
+            global ACCENT
+            _r,_g,_b = grad_color((frame * 0.02) % 1.0, theme)
+            ACCENT = rgb(_r,_g,_b)
             stats["frame"] = frame
             stats["uptime"] = uptime_str()
 
@@ -535,7 +673,7 @@ def render_static():
     user = os.environ.get("USER", "user")
     host = platform.node() or "host"
     info = [
-        f"{fg(208)}{user}@{host}{RESET}",
+        f"{ACCENT}{user}@{host}{RESET}",
         "─" * 44,
         kv("OS", distro()), kv("Kernel", platform.release()),
         kv("Uptime", uptime_str()), kv("Load", "  ".join(load_avg())),
